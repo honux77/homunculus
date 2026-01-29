@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EC2 CPU Monitor</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            color: #fff;
+            padding: 20px;
+        }
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 2rem;
+            color: #00d4ff;
+        }
+        .card {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 24px;
+            margin-bottom: 20px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .card h2 {
+            font-size: 1rem;
+            color: #888;
+            margin-bottom: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .instance-id {
+            font-size: 1.5rem;
+            font-family: monospace;
+            color: #00d4ff;
+            word-break: break-all;
+        }
+        .cpu-display {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+        .cpu-value {
+            font-size: 4rem;
+            font-weight: bold;
+            color: #00ff88;
+        }
+        .cpu-cores {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            flex: 1;
+        }
+        .core {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 8px 12px;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            min-width: 80px;
+            text-align: center;
+        }
+        .core-label {
+            color: #888;
+            font-size: 0.7rem;
+        }
+        .core-value {
+            font-weight: bold;
+            color: #00d4ff;
+        }
+        .stress-section {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        .btn {
+            padding: 16px 32px;
+            font-size: 1.1rem;
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: all 0.3s ease;
+        }
+        .btn-start {
+            background: linear-gradient(135deg, #ff6b6b, #ee5a5a);
+            color: white;
+        }
+        .btn-start:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(255, 107, 107, 0.4);
+        }
+        .btn-stop {
+            background: linear-gradient(135deg, #4ecdc4, #45b7aa);
+            color: white;
+        }
+        .btn-stop:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(78, 205, 196, 0.4);
+        }
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .status {
+            padding: 12px 20px;
+            border-radius: 8px;
+            font-weight: bold;
+        }
+        .status-idle {
+            background: rgba(0, 255, 136, 0.2);
+            color: #00ff88;
+        }
+        .status-active {
+            background: rgba(255, 107, 107, 0.2);
+            color: #ff6b6b;
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        .chart-container {
+            position: relative;
+            height: 300px;
+        }
+        .update-info {
+            text-align: right;
+            color: #666;
+            font-size: 0.8rem;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>EC2 CPU Monitor</h1>
+
+        <div class="card">
+            <h2>Instance ID</h2>
+            <div class="instance-id">{{ instance_id }}</div>
+        </div>
+
+        <div class="card">
+            <h2>CPU Usage</h2>
+            <div class="cpu-display">
+                <div class="cpu-value"><span id="cpu-total">0</span>%</div>
+                <div class="cpu-cores" id="cpu-cores"></div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Stress Test</h2>
+            <div class="stress-section">
+                <button class="btn btn-start" id="btn-start" onclick="startStress()">
+                    부하주기 (5분)
+                </button>
+                <button class="btn btn-stop" id="btn-stop" onclick="stopStress()" disabled>
+                    중지
+                </button>
+                <div class="status status-idle" id="status">
+                    대기중
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>CPU Usage History (5초 단위 갱신)</h2>
+            <div class="chart-container">
+                <canvas id="cpuChart"></canvas>
+            </div>
+            <div class="update-info">마지막 업데이트: <span id="last-update">-</span></div>
+        </div>
+    </div>
+
+    <script>
+        const MAX_DATA_POINTS = 60; // 5분 동안의 데이터 (60 * 5초)
+        const cpuData = [];
+        const labels = [];
+
+        // Chart.js 설정
+        const ctx = document.getElementById('cpuChart').getContext('2d');
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'CPU Usage (%)',
+                    data: cpuData,
+                    borderColor: '#00d4ff',
+                    backgroundColor: 'rgba(0, 212, 255, 0.1)',
+                    borderWidth: 2,
+                    fill: true,
+                    tension: 0.4,
+                    pointRadius: 0,
+                    pointHoverRadius: 6
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        max: 100,
+                        grid: {
+                            color: 'rgba(255, 255, 255, 0.1)'
+                        },
+                        ticks: {
+                            color: '#888',
+                            callback: value => value + '%'
+                        }
+                    },
+                    x: {
+                        grid: {
+                            color: 'rgba(255, 255, 255, 0.1)'
+                        },
+                        ticks: {
+                            color: '#888',
+                            maxTicksLimit: 10
+                        }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        display: false
+                    }
+                },
+                animation: {
+                    duration: 300
+                }
+            }
+        });
+
+        function formatTime(date) {
+            return date.toLocaleTimeString('ko-KR', {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            });
+        }
+
+        function updateCpuDisplay(data) {
+            // 전체 CPU 사용률
+            document.getElementById('cpu-total').textContent = data.cpu_percent.toFixed(1);
+
+            // 코어별 사용률
+            const coresContainer = document.getElementById('cpu-cores');
+            coresContainer.innerHTML = data.cpu_per_core.map((percent, idx) => `
+                <div class="core">
+                    <div class="core-label">Core ${idx}</div>
+                    <div class="core-value">${percent.toFixed(0)}%</div>
+                </div>
+            `).join('');
+
+            // 상태 업데이트
+            const status = document.getElementById('status');
+            const btnStart = document.getElementById('btn-start');
+            const btnStop = document.getElementById('btn-stop');
+
+            if (data.stress_active) {
+                const minutes = Math.floor(data.remaining_seconds / 60);
+                const seconds = data.remaining_seconds % 60;
+                status.textContent = `실행중 (${minutes}:${seconds.toString().padStart(2, '0')} 남음)`;
+                status.className = 'status status-active';
+                btnStart.disabled = true;
+                btnStop.disabled = false;
+            } else {
+                status.textContent = '대기중';
+                status.className = 'status status-idle';
+                btnStart.disabled = false;
+                btnStop.disabled = true;
+            }
+
+            // 차트 업데이트
+            const now = new Date();
+            labels.push(formatTime(now));
+            cpuData.push(data.cpu_percent);
+
+            if (labels.length > MAX_DATA_POINTS) {
+                labels.shift();
+                cpuData.shift();
+            }
+
+            chart.update('none');
+
+            // 마지막 업데이트 시간
+            document.getElementById('last-update').textContent = formatTime(now);
+        }
+
+        async function fetchCpu() {
+            try {
+                const response = await fetch('/api/cpu');
+                const data = await response.json();
+                updateCpuDisplay(data);
+            } catch (error) {
+                console.error('Failed to fetch CPU data:', error);
+            }
+        }
+
+        async function startStress() {
+            try {
+                const response = await fetch('/api/stress/start', { method: 'POST' });
+                const data = await response.json();
+                console.log(data.message);
+            } catch (error) {
+                console.error('Failed to start stress:', error);
+            }
+        }
+
+        async function stopStress() {
+            try {
+                const response = await fetch('/api/stress/stop', { method: 'POST' });
+                const data = await response.json();
+                console.log(data.message);
+            } catch (error) {
+                console.error('Failed to stop stress:', error);
+            }
+        }
+
+        // 초기 로드 및 5초마다 갱신
+        fetchCpu();
+        setInterval(fetchCpu, 5000);
+    </script>
+</body>
+</html>
