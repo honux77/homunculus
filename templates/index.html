@@ -170,7 +170,7 @@
                 <button class="btn btn-start" id="btn-start" onclick="startStress()">
                     부하주기 (5분)
                 </button>
-                <button class="btn btn-stop" id="btn-stop" onclick="stopStress()" disabled>
+                <button class="btn btn-stop" id="btn-stop" onclick="stopStress()">
                     중지
                 </button>
                 <div class="status status-idle" id="status">
@@ -271,7 +271,6 @@
             // 상태 업데이트
             const status = document.getElementById('status');
             const btnStart = document.getElementById('btn-start');
-            const btnStop = document.getElementById('btn-stop');
 
             if (data.stress_active) {
                 const minutes = Math.floor(data.remaining_seconds / 60);
@@ -279,12 +278,10 @@
                 status.textContent = `실행중 (${minutes}:${seconds.toString().padStart(2, '0')} 남음)`;
                 status.className = 'status status-active';
                 btnStart.disabled = true;
-                btnStop.disabled = false;
             } else {
                 status.textContent = '대기중';
                 status.className = 'status status-idle';
                 btnStart.disabled = false;
-                btnStop.disabled = true;
             }
 
             // 차트 업데이트
